@@ -1,0 +1,25 @@
+# Google Home script editor automation (paste in the Google Home app or home.google.com:
+# Automations > Create > Script editor). Turns on the "Package At Front Door" virtual switch
+# (input_boolean.package_at_front_door in Home Assistant) when Nest package detection (Nest Aware)
+# reports a delivery. Home Assistant then raises sensor.front_door_package for the MagicMirror and
+# auto-clears it after input_number.package_alert_clear_hours.
+#
+# Device names must match Google Home exactly. The editor accepts "Device name - Room name" in the
+# autocomplete; use whatever the editor suggests for your doorbell and for the HA helper
+# (the helper is exposed through Home Assistant as "Package At Front Door").
+metadata:
+  name: Package delivered at front door
+  description: Turns on Package At Front Door when the doorbell detects a package delivery.
+
+automations:
+  starters:
+    - type: device.event.PackageDelivered
+      # Exact Google Home name of the Nest doorbell, with the room if the editor shows one.
+      device: Camera - Front Door
+      # Ignore repeat events for 2 minutes after one fires.
+      suppressFor: 2min
+  actions:
+    - type: device.command.OnOff
+      devices:
+        - Package At Front Door
+      on: true

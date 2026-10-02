@@ -1,0 +1,222 @@
+/* MMM-PackageAlert styles
+   Colours come from the shared --mm-* theme variables (set on body.mm-day / body.mm-night
+   by the theme's custom.css); the fallbacks are the night values.
+
+   Layout: the banner is a fixed overlay. The module's own wrapper is zero height in every
+   state and has no region margin, so nothing else on the page ever moves. JS sets the
+   card's `top` (just under the clock card). */
+
+.module.MMM-PackageAlert {
+	margin: 0 !important;
+	padding: 0 !important;
+	height: 0 !important;
+	min-height: 0 !important;
+	line-height: 0;
+}
+
+.MMM-PackageAlert .module-content,
+.MMM-PackageAlert .pa-root {
+	height: 0;
+	margin: 0;
+	padding: 0;
+	font-family: inherit;
+}
+
+.MMM-PackageAlert .pa-empty {
+	display: none;
+}
+
+/* Centred overlay above normal modules, below MM's alert/notification layer. */
+.MMM-PackageAlert .pa-card {
+	--pa-bg: rgb(14 20 38 / 90%);
+
+	position: fixed;
+	top: 24px;
+	left: 50%;
+	z-index: 100;
+	box-sizing: border-box;
+	width: min(1000px, calc(100vw - 36px));
+	transform: translateX(-50%);
+	padding: 12px 22px;
+	text-align: left;
+	line-height: 1.3;
+	color: var(--mm-text, #e8edf6);
+	background: var(--pa-bg);
+	border: 1px solid var(--mm-border, rgb(255 255 255 / 10%));
+	border-radius: 20px;
+	box-shadow:
+		0 14px 36px rgb(1 4 14 / 55%),
+		inset 0 1px 0 var(--mm-highlight, rgb(255 255 255 / 7%));
+	backdrop-filter: blur(22px) saturate(150%);
+	pointer-events: none;
+	transition: background-color 1.5s ease, border-color 1.5s ease, color 1.5s ease;
+}
+
+body.mm-day .MMM-PackageAlert .pa-card {
+	--pa-bg: rgb(255 255 255 / 92%);
+
+	box-shadow:
+		0 12px 30px rgb(40 56 84 / 22%),
+		inset 0 1px 0 var(--mm-highlight, rgb(255 255 255 / 70%));
+}
+
+/* The package alert earns an accent border and tint (over the solid base so it stays legible). */
+.MMM-PackageAlert .pa-card.pa-card-door {
+	border-color: var(--mm-today-border, rgb(244 194 122 / 55%));
+	background-image: linear-gradient(var(--mm-today-bg, rgb(244 194 122 / 14%)), var(--mm-today-bg, rgb(244 194 122 / 14%)));
+}
+
+.MMM-PackageAlert .pa-door {
+	display: flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: 2px 14px;
+}
+
+/* Carrier icons (Font Awesome; brand glyphs need the Brands family, which .fa-brands sets). */
+.MMM-PackageAlert .pa-carrier-icon {
+	flex: 0 0 auto;
+	line-height: 1;
+	color: var(--mm-accent, #f4c27a);
+}
+
+.MMM-PackageAlert .pa-door-icon {
+	align-self: center;
+	width: 1.4em;
+	font-size: 1.7em;
+	text-align: center;
+}
+
+.MMM-PackageAlert .pa-title {
+	font-size: 1.3em;
+	font-weight: 600;
+	color: var(--mm-text, #e8edf6);
+}
+
+.MMM-PackageAlert .pa-detail {
+	font-size: 0.85em;
+	color: var(--mm-text-2, #9ba7bc);
+}
+
+.MMM-PackageAlert .pa-arriving {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 14px;
+	font-size: 0.9em;
+	color: var(--mm-text-2, #9ba7bc);
+}
+
+.MMM-PackageAlert .pa-door + .pa-arriving {
+	margin-top: 6px;
+	padding-top: 6px;
+	border-top: 1px solid var(--mm-border, rgb(255 255 255 / 10%));
+}
+
+.MMM-PackageAlert .pa-arriving-label {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 2px 8px;
+	color: var(--mm-text-2, #9ba7bc);
+}
+
+.MMM-PackageAlert .pa-carrier {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.MMM-PackageAlert .pa-arriving .pa-carrier-icon {
+	color: var(--mm-text-2, #9ba7bc);
+}
+
+.MMM-PackageAlert .pa-tracking {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.MMM-PackageAlert .pa-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 1px 10px;
+	font-size: 0.85em;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: 0.02em;
+	color: var(--mm-text-2, #9ba7bc);
+	background: var(--mm-tile, rgb(255 255 255 / 5%));
+	border: 1px solid var(--mm-border, rgb(255 255 255 / 10%));
+	border-radius: 999px;
+}
+
+.MMM-PackageAlert .pa-status {
+	font-size: 0.8em;
+	color: var(--mm-text-2, #9ba7bc);
+}
+
+.MMM-PackageAlert .pa-card > .pa-status:not(:first-child) {
+	margin-top: 6px;
+}
+
+.MMM-PackageAlert .pa-status-error {
+	color: var(--mm-accent, #f4c27a);
+}
+
+/* Day: win against custom.css's forced day text colours by specificity (they are !important). */
+body.mm-day .MMM-PackageAlert .pa-card .pa-title {
+	color: var(--mm-text, #1d2738) !important;
+	text-shadow: none !important;
+}
+
+body.mm-day .MMM-PackageAlert .pa-card :is(.pa-detail, .pa-arriving-label, .pa-arriving-count, .pa-carrier-name, .pa-chip, .pa-chip-text, .pa-status) {
+	color: var(--mm-text-2, #5a6679) !important;
+	text-shadow: none !important;
+}
+
+body.mm-day .MMM-PackageAlert .pa-card .pa-status-error {
+	color: var(--mm-accent, #c2560f) !important;
+}
+
+body.mm-day .MMM-PackageAlert .pa-card .pa-door-icon {
+	color: var(--mm-accent, #c2560f) !important;
+}
+
+body.mm-day .MMM-PackageAlert .pa-card .pa-arriving .pa-carrier-icon {
+	color: var(--mm-text-2, #5a6679) !important;
+}
+
+/* One gentle attention pulse (a soft ring), finite. JS removes the class and cancels on suspend. */
+@keyframes pa-pulse-ring {
+	0% {
+		box-shadow:
+			0 14px 36px rgb(1 4 14 / 55%),
+			inset 0 1px 0 var(--mm-highlight, rgb(255 255 255 / 7%)),
+			0 0 0 0 var(--mm-today-border, rgb(244 194 122 / 55%));
+	}
+
+	60% {
+		box-shadow:
+			0 14px 36px rgb(1 4 14 / 55%),
+			inset 0 1px 0 var(--mm-highlight, rgb(255 255 255 / 7%)),
+			0 0 0 14px rgb(244 194 122 / 0%);
+	}
+
+	100% {
+		box-shadow:
+			0 14px 36px rgb(1 4 14 / 55%),
+			inset 0 1px 0 var(--mm-highlight, rgb(255 255 255 / 7%)),
+			0 0 0 0 rgb(244 194 122 / 0%);
+	}
+}
+
+.MMM-PackageAlert .pa-card.pa-pulse {
+	animation: pa-pulse-ring 2.6s ease-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.MMM-PackageAlert .pa-card.pa-pulse {
+		animation: none;
+	}
+}

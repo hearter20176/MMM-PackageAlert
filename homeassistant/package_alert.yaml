@@ -1,0 +1,442 @@
+# Front-door package alert for the MagicMirror (MMM-PackageAlert).
+#
+# Requires in configuration.yaml:
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Pieces
+#   1. input_boolean.package_at_front_door  (ALREADY EXISTS, UI/storage, exposed to Google Assistant;
+#      deliberately NOT defined here). A Google Home automation (google_home_script.yaml) turns it
+#      on when Nest package detection fires PackageDelivered. Carrier "Delivered" emails turn it on
+#      too (source email). Nothing detects removal: it turns off by the auto-clear timeout below,
+#      by hand in the HA UI, or by voice ("Hey Google, turn off Package At Front Door").
+#   2. input_number.package_alert_clear_hours  auto-clear timeout in hours (1-48). It has no
+#      `initial:` so a value tuned in the UI survives restarts, but that means a brand-new helper
+#      starts at its minimum (1 h). ONE-TIME STEP after the first load: set it to 12 in the UI (or
+#      Developer Tools > Actions > input_number.set_value, value 12). It restores after that.
+#      (No auto-set automation: HA cannot tell "fresh at minimum" from "the user chose 1 h".)
+#   3. sensor.front_door_package   "present" | "clear" mirror of the helper, plus since/source/carrier.
+#   4. sensor.package_deliveries   out-for-delivery / delivered lists parsed from carrier emails,
+#      reset at local midnight.
+#   5. Automations (ids package_alert_*): email parser, auto-clear.
+#
+# Internal events
+#   package_alert_arrival  {source: "email", carrier}  fired just BEFORE the helper is turned on so
+#                          the door sensor can record where the arrival came from. If the helper
+#                          turns on with no such event in the preceding 10 s the source is "camera".
+#   package_alert_email    {item: {kind, carrier, tracking, subject, received, key}}  one parsed carrier
+#                          email as ONE nested dict, consumed by sensor.package_deliveries.
+#
+# Email path is inert until the IMAP integration exists (imap_content never fires). Setup in the HA UI:
+#   Settings > Devices & services > Add > IMAP (Gmail, app password; needs 2-step verification).
+#   Folder INBOX; search  X-GM-RAW "in:inbox newer_than:2d from:(ups.com OR fedex.com OR usps.com OR usps.gov OR amazon.com OR dhl.com OR ontrac.com)"
+#   Options: message data = text only (NOT headers); max message size 8000-10000.
+#   Do not use UnSeen in the search (reading the mail on a phone first would suppress the event).
+#
+# Contract notes (MMM-PackageAlert reads these entities)
+#   - sensor.front_door_package carries two extra attributes, pending_email_at and
+#     pending_email_carrier (arrival hand-off between the two events); the mirror ignores them.
+#     sensor.package_deliveries carries an extra `seen` list (message keys, no tracking numbers).
+#     description, last_check, last_check_result are reserved (always null), checks_today is 0.
+#   - Tracking numbers are digit strings that HA's template engine would coerce to ints (USPS ones
+#     overflow JSON and the recorder would then log them at WARNING). So the parser wraps the
+#     number in a dict and ships the whole email as ONE nested dict (`item`) in the event.
+#   - Trusted "delivered" senders (variable sender_ok in package_alert_email_parse): UPS mcinfo@ and
+#     pkginfo@; FedEx trackingupdates@, fedexdelivery@, fedexnotifications@, fedexcanada@; USPS
+#     auto-reply@; Amazon shipment-tracking@, order-update@, thehub@; DHL donotreply*/noreply*/
+#     no-reply*; OnTrac any address. Mail from any other address can still count as out-for-delivery
+#     but never turns the door on. For every carrier except Amazon a "delivered" mail must also carry
+#     a tracking number or use the personal "Your package/shipment ... was delivered" wording; Amazon
+#     needs its anchored "Delivered:" subject (or a past-tense phrase) from an Amazon sender above.
+#     An Amazon "Delivered:" subject that also mentions deals, Prime Day, sale or "save N" is skipped
+#     (treated as marketing) - such an item title will not raise an email alert; the doorbell path still does.
+#     MAINTENANCE: if a real delivered email is missed, open the automation trace for
+#     package_alert_email_parse, read trigger.event.data.sender and subject, and add that sender's
+#     local-part (the text before @) to the matching line of sender_ok. If the sender is right, check
+#     `kind` and `trk` in the trace to see which rule rejected it.
+#   - IMAP only fires for the newest message matching the search; two carrier mails between polls
+#     lose the older one (integration limit).
+#   - Suggested (configuration.yaml, not part of this package) to keep email text and tracking
+#     numbers out of the database:  recorder: exclude: event_types: [imap_content, package_alert_email]
+#   - Tracking numbers are personal data: nothing here logs them or raises notifications with them.
+#     Automation traces keep email text locally, so stored_traces is kept small.
+#   - Right after first install the sensors read "unknown" until the first trigger fires (HA start
+#     triggers cover that); the mirror treats unknown/unavailable as nothing to show.
+#   - Trigger-based sensors rebuild ALL attributes on every trigger, so each attribute below carries
+#     its previous value forward via state_attr() of its own entity id.
+
+input_number:
+  package_alert_clear_hours:
+    name: Package alert auto-clear (hours)
+    icon: mdi:timer-outline
+    min: 1
+    max: 48
+    step: 1
+    # No initial: (it would reset the UI value on every restart). First load starts at min, see header.
+    mode: box
+    unit_of_measurement: h
+
+template:
+  # ---------------------------------------------------------------------------------------------
+  # sensor.front_door_package
+  # ---------------------------------------------------------------------------------------------
+  - triggers:
+      - trigger: state
+        entity_id: input_boolean.package_at_front_door
+        to:
+          - "on"
+          - "off"
+        id: helper
+      - trigger: event
+        event_type: package_alert_arrival
+        id: arrival
+      - trigger: homeassistant
+        event: start
+        id: init
+    variables:
+      cur: >-
+        {{ states('sensor.front_door_package')
+           if states('sensor.front_door_package') in ['present', 'clear'] else 'clear' }}
+      hs: "{{ states('input_boolean.package_at_front_door') }}"
+      # follows the helper; if it is unavailable/unknown keep the previous state
+      new_state: "{{ 'present' if hs == 'on' else ('clear' if hs == 'off' else cur) }}"
+      became_present: "{{ new_state == 'present' and cur == 'clear' }}"
+      ev: "{{ trigger.event.data if trigger.id == 'arrival' else {} }}"
+      ev_c: "{{ (ev.get('carrier') or '') | string | lower | trim }}"
+      ev_carrier: >-
+        {{ none if ev_c == '' else
+           (ev_c if ev_c in ['usps', 'ups', 'fedex', 'dhl', 'amazon', 'ontrac'] else 'other') }}
+      pend_at: "{{ state_attr('sensor.front_door_package', 'pending_email_at') }}"
+      pend_c: "{{ state_attr('sensor.front_door_package', 'pending_email_carrier') }}"
+      pend_age: >-
+        {{ (now() - as_datetime(pend_at)).total_seconds() if pend_at else 999999 }}
+      # an email arrival event within the last 10 s explains this helper turn-on
+      pend_ok: "{{ pend_age | float(999999) <= 10 }}"
+      # record a new arrival hand-off only while the door reads clear
+      set_pend: "{{ trigger.id == 'arrival' and new_state == 'clear' }}"
+      keep_pend: "{{ not became_present and (pend_age | float(999999)) <= 60 }}"
+    sensor:
+      - name: Front Door Package
+        unique_id: package_alert_front_door_package
+        icon: >-
+          {{ 'mdi:package-variant-closed' if new_state == 'present' else 'mdi:package-variant' }}
+        state: "{{ new_state }}"
+        attributes:
+          since: >-
+            {{ now().isoformat()
+               if (new_state != cur or not state_attr('sensor.front_door_package', 'since'))
+               else state_attr('sensor.front_door_package', 'since') }}
+          source: >-
+            {{ none if new_state == 'clear' else
+               (('email' if pend_ok else 'camera') if became_present
+                else (state_attr('sensor.front_door_package', 'source') or none)) }}
+          carrier: >-
+            {{ none if new_state == 'clear' else
+               ((pend_c or none) if (became_present and pend_ok) else
+                (none if became_present else
+                 (state_attr('sensor.front_door_package', 'carrier') or ev_carrier or none))) }}
+          description: "{{ none }}"
+          last_check: "{{ none }}"
+          last_check_result: "{{ none }}"
+          checks_today: "{{ 0 }}"
+          pending_email_at: >-
+            {{ now().isoformat() if set_pend else (pend_at if keep_pend else none) }}
+          pending_email_carrier: >-
+            {{ (ev_carrier if set_pend else (pend_c if keep_pend else none)) or none }}
+
+  # ---------------------------------------------------------------------------------------------
+  # sensor.package_deliveries
+  # ---------------------------------------------------------------------------------------------
+  - triggers:
+      - trigger: event
+        event_type: package_alert_email
+        id: email
+      - trigger: time
+        at: "00:00:00"
+        id: midnight
+      - trigger: homeassistant
+        event: start
+        id: init
+    variables:
+      # one parsed email arrives as a single nested dict `item` (see header); never read tracking
+      # from a bare variable: all-digit strings would be coerced to ints
+      ev: "{{ (trigger.event.data.get('item') or {}) if trigger.id == 'email' else {} }}"
+      kind: "{{ ev.get('kind') or '' }}"
+      car: "{{ ev.get('carrier') or 'other' }}"
+      trw: "{{ {'v': ((ev.get('tracking') or '') | string)} }}"
+      subj: "{{ ((ev.get('subject') or '') | string)[:100] }}"
+      recv: "{{ ev.get('received') or '' }}"
+      ekey: "{{ ev.get('key') or '' }}"
+      # only items received/delivered today (local) survive: covers a missed midnight reset
+      out_cur: |-
+        {%- set today = now().date().isoformat() -%}
+        {%- set ns = namespace(items=[]) -%}
+        {%- for i in (state_attr('sensor.package_deliveries', 'out_for_delivery') or []) -%}
+          {%- if ((i.get('received') or '') | string)[:10] == today -%}{%- set ns.items = ns.items + [i] -%}{%- endif -%}
+        {%- endfor -%}
+        {{- ns.items -}}
+      del_cur: |-
+        {%- set today = now().date().isoformat() -%}
+        {%- set ns = namespace(items=[]) -%}
+        {%- for i in (state_attr('sensor.package_deliveries', 'delivered') or []) -%}
+          {%- if ((i.get('delivered_at') or '') | string)[:10] == today -%}{%- set ns.items = ns.items + [i] -%}{%- endif -%}
+        {%- endfor -%}
+        {{- ns.items -}}
+      seen_cur: "{{ (state_attr('sensor.package_deliveries', 'seen') or []) | list }}"
+      seen_new: >-
+        {{ ((seen_cur + [ekey]) if (trigger.id == 'email' and ekey and ekey not in seen_cur)
+            else seen_cur)[-20:] }}
+      out_new: |-
+        {%- if trigger.id == 'midnight' -%}
+          {{- [] -}}
+        {%- elif trigger.id != 'email' -%}
+          {{- out_cur -}}
+        {%- elif kind == 'out_for_delivery' -%}
+          {%- set key = trw.v if trw.v else subj -%}
+          {%- set ns = namespace(items=[], seen=false) -%}
+          {%- for d in del_cur -%}
+            {%- if trw.v and ((d.get('tracking') or '') | string) == trw.v -%}
+              {%- set ns.seen = true -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- for i in out_cur -%}
+            {%- if ((i.get('tracking') or i.get('subject') or '') | string) != key -%}
+              {%- set ns.items = ns.items + [i] -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- if ns.seen -%}
+            {{- out_cur -}}
+          {%- else -%}
+            {{- (ns.items + [{'carrier': car, 'tracking': (trw.v if trw.v else none), 'subject': subj, 'received': recv}])[-20:] -}}
+          {%- endif -%}
+        {%- elif kind == 'delivered' -%}
+          {%- set ns = namespace(items=[], removed=false) -%}
+          {%- for i in out_cur -%}
+            {%- set it = ((i.get('tracking') or '') | string) -%}
+            {%- set hit = ((it == trw.v) or (it == '' and i.get('carrier') == car)) if trw.v else (i.get('carrier') == car) -%}
+            {%- if hit and not ns.removed -%}
+              {%- set ns.removed = true -%}
+            {%- else -%}
+              {%- set ns.items = ns.items + [i] -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{- ns.items -}}
+        {%- else -%}
+          {{- out_cur -}}
+        {%- endif -%}
+      del_new: |-
+        {%- if trigger.id == 'midnight' -%}
+          {{- [] -}}
+        {%- elif trigger.id == 'email' and kind == 'delivered' -%}
+          {%- set dk = trw.v if trw.v else car -%}
+          {%- set ns = namespace(items=[]) -%}
+          {%- for d in del_cur -%}
+            {%- if ((d.get('tracking') or d.get('carrier') or '') | string) != dk -%}
+              {%- set ns.items = ns.items + [d] -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{- (ns.items + [{'carrier': car, 'tracking': (trw.v if trw.v else none), 'delivered_at': recv}])[-20:] -}}
+        {%- else -%}
+          {{- del_cur -}}
+        {%- endif -%}
+    sensor:
+      - name: Package Deliveries
+        unique_id: package_alert_package_deliveries
+        icon: mdi:truck-delivery
+        state: "{{ out_new | length }}"
+        attributes:
+          out_for_delivery: "{{ out_new }}"
+          delivered: "{{ del_new }}"
+          seen: "{{ seen_new }}"
+
+automation:
+  # ---------------------------------------------------------------------------------------------
+  # Carrier email -> package_alert_email (+ helper on for "delivered")
+  # ---------------------------------------------------------------------------------------------
+  - id: package_alert_email_parse
+    alias: Package alert - parse carrier email
+    description: >-
+      Parses carrier emails from the IMAP integration (imap_content). Out-for-delivery mails feed
+      sensor.package_deliveries; "delivered" mails also turn on input_boolean.package_at_front_door
+      with source email. Inert until the IMAP integration is configured. Mail older than 1 h
+      (delivered) or 12 h (out for delivery) is ignored so a restart replay cannot set the door.
+    mode: queued
+    max: 10
+    max_exceeded: silent
+    trace:
+      stored_traces: 3
+    triggers:
+      - trigger: event
+        event_type: imap_content
+    variables:
+      sender: "{{ (trigger.event.data.get('sender') or '') | string | lower }}"
+      subject: "{{ (trigger.event.data.get('subject') or '') | string }}"
+      text: "{{ ((trigger.event.data.get('text') or '') | string)[:9000] }}"
+      hay: "{{ subject ~ ' ' ~ text }}"
+      # unparseable/missing date gives a huge age, so the mail is ignored (fails safe)
+      age_s: |-
+        {%- set raw = trigger.event.data.get('date') -%}
+        {%- set d = as_datetime(raw, none) if raw else none -%}
+        {{- (now() - as_local(d)).total_seconds() if d else 999999 -}}
+      carrier: |-
+        {%- if sender is search('@([a-z0-9-]+\\.)*ups\\.com(?![a-z0-9._-])') -%}ups
+        {%- elif sender is search('@([a-z0-9-]+\\.)*fedex\\.com(?![a-z0-9._-])') -%}fedex
+        {%- elif sender is search('@([a-z0-9-]+\\.)*usps\\.(com|gov)(?![a-z0-9._-])') -%}usps
+        {%- elif sender is search('@([a-z0-9-]+\\.)*amazon\\.com(?![a-z0-9._-])') -%}amazon
+        {%- elif sender is search('@([a-z0-9-]+\\.)*dhl\\.(com|de)(?![a-z0-9._-])') -%}dhl
+        {%- elif sender is search('@([a-z0-9-]+\\.)*ontrac\\.com(?![a-z0-9._-])') -%}ontrac
+        {%- endif -%}
+      # DHL states delivery status in the body rather than the subject, so scan the start of it too
+      scan: >-
+        {{ (subject | lower) ~ ((' ' ~ (text | lower)[:1500]) if (carrier | trim) == 'dhl' else '') }}
+      # Per-carrier tracking patterns, tried in order. FedEx/DHL digit-only numbers need the word
+      # "tracking" (or waybill/shipment for DHL) within 200 chars before them, so order numbers and
+      # phone numbers are not picked up. No match gives an empty tracking (dedupe falls back to subject).
+      # The result is wrapped in a dict ({'v': ...}) so an all-digit number stays a string: HA's
+      # template result parser would turn a bare digit string into an int.
+      trk: |-
+        {%- set pats = {
+          'ups': ['\\b1Z[0-9A-Z]{16}\\b'],
+          'fedex': ['(?is)tracking.{0,200}?(?<!\\d)(\\d{12}|\\d{15}|\\d{22})(?!\\d)'],
+          'usps': ['(?<!\\d)9[2345]\\d{18,24}(?!\\d)'],
+          'amazon': ['\\bTB[ACM]\\d{12}\\b'],
+          'dhl': ['\\bJJD\\d{10,22}\\b', '(?is)(?:tracking|waybill|shipment).{0,200}?(?<!\\d)(\\d{10,11})(?!\\d)'],
+          'ontrac': ['\\b[CD]\\d{14}\\b']
+        } -%}
+        {%- set ns = namespace(found='') -%}
+        {%- for p in pats.get((carrier | trim), []) -%}
+          {%- if not ns.found -%}
+            {%- set m = (hay | regex_findall(p)) -%}
+            {%- if m | length > 0 -%}{%- set ns.found = (m | first) -%}{%- endif -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{- {'v': (ns.found | string)} -}}
+      # sender_ok: "delivered" is only believed from each carrier's transactional sender addresses
+      # (marketing mail comes from other local-parts). Out-for-delivery is not gated.
+      sender_ok: |-
+        {%- set c = carrier | trim -%}
+        {{- (c == 'ups' and sender is search('(^|<)(mcinfo|pkginfo)@'))
+            or (c == 'fedex' and sender is search('(^|<)(trackingupdates|fedexdelivery|fedexnotifications|fedexcanada)@'))
+            or (c == 'usps' and sender is search('(^|<)auto-reply@'))
+            or (c == 'amazon' and sender is search('(^|<)(shipment-tracking|order-update|thehub)@'))
+            or (c == 'dhl' and sender is search('(^|<)(donotreply|noreply|no-reply)[a-z._-]*@'))
+            or c == 'ontrac' -}}
+      # kind: transactional wording from a transactional sender only.
+      #  1. Amazon style "Delivered: <item>" at the very start of the subject, from an allowlisted
+      #     Amazon sender, wins first (item titles may contain ?, deals, review, delayed ...).
+      #  2. Marketing/survey/recap/failed-delivery subjects are rejected.
+      #  3. "delivered" needs a past-tense transactional phrase (subject, or for DHL a strong one in the
+      #     body), no future/conditional word before THAT phrase in its own sentence, and no
+      #     neighbour/not-delivered wording.
+      #  4. Except Amazon, "delivered" also needs evidence it is about one parcel: a tracking number
+      #     was found, or the wording is the personal "Your package/shipment ... was delivered" form
+      #     (subject, or DHL body). This keeps recaps, newsletters and "see where packages were
+      #     delivered" promos from allowlisted senders from arming the door.
+      #  5. Otherwise out-for-delivery phrases.
+      kind: |-
+        {%- set sl = subject | lower -%}
+        {%- set c = carrier | trim -%}
+        {%- set posphrase = '(has been|have been|was|were) delivered|delivered successfully|successfully delivered|shipment delivered|item delivered' -%}
+        {%- set future = scan is search('\\b(once|will|when|if|until|after|should)\\b[^.!?]{0,60}\\b(' ~ posphrase ~ ')') -%}
+        {%- set pos = (sl is search(posphrase)) or (c == 'dhl' and scan is search('(has been|was) delivered|delivered successfully|successfully delivered')) -%}
+        {%- set personal = (sl is search('^(ups update: )?your (ups |usps |fedex )?(package|packages|shipment|shipments|parcel|item|items|order)( [a-z0-9]+)? (was|were|has been|have been) delivered|^(usps )?item delivered')) or (c == 'dhl' and scan is search('your (shipment|parcel|package)\\b[^.!?]{0,40}\\b(has been|was) delivered')) -%}
+        {%- if sl is search('^\\s*delivered:') and sender_ok and sl is not search('\\bdeals?\\b|prime day|\\bsale\\b|save [0-9]') -%}delivered
+        {%- elif sl is search('not delivered|delivery attempt|attempted|undeliverable|delivery exception|delivered to (a )?neighbo|delayed|rate your|rate (them|it)\\b|survey|feedback|\\bdeals?\\b|my choice|as little as|how was|\\breview\\b|\\brecently\\b|\\brecap\\b|this year|was your package delivered') -%}
+        {%- elif sender_ok and pos and (c == 'amazon' or trk.v != '' or personal) and not future and scan is not search('not delivered|could not be delivered|undeliverable|delivered to (a |your )?neighbo') -%}delivered
+        {%- elif scan is search('out for delivery|scheduled for delivery today|delivery scheduled for today|driver is arriving|follow your delivery|will be delivered today|(scheduled|expected|due) to be delivered today') -%}out_for_delivery
+        {%- elif scan is search('arriving today') and sender is not search('informeddelivery') -%}out_for_delivery
+        {%- endif -%}
+      # message identity: uid + date + subject length (no tracking number, never digit-only)
+      mkey: >-
+        {{ (trigger.event.data.get('uid') | string) ~ '|' ~ (trigger.event.data.get('date') | string) ~ '|' ~ (subject | length) }}
+      # the whole parsed email as ONE dict so nothing is re-parsed on the way to the sensor
+      item: |-
+        {{- {'kind': (kind | string | trim), 'carrier': (carrier | string | trim),
+             'tracking': (trk.v | string | trim), 'subject': ((subject | string)[:100]),
+             'received': now().isoformat(), 'key': mkey} -}}
+    conditions:
+      # initial false = the same newest message fired again, never new mail
+      - condition: template
+        value_template: "{{ trigger.event.data.get('initial', true) | bool(true) }}"
+      - condition: template
+        value_template: >-
+          {{ (carrier | string | trim) in ['ups', 'fedex', 'usps', 'amazon', 'dhl', 'ontrac']
+             and (kind | string | trim) in ['delivered', 'out_for_delivery'] }}
+      # ignore stale replays (initial event on HA restart / integration reload)
+      - condition: template
+        value_template: >-
+          {{ age_s | float(999999) < (3600 if (kind | trim) == 'delivered' else 43200) }}
+      # a message already processed (replay after restart, IMAP reload or archiving the newest
+      # mail) must neither re-arm the door after a manual clear nor re-add a delivered item
+      - condition: template
+        value_template: >-
+          {{ mkey not in (state_attr('sensor.package_deliveries', 'seen') or []) }}
+      # a replayed "delivered" mail whose tracking number is already recorded as delivered today
+      - condition: template
+        value_template: >-
+          {{ not ((kind | trim) == 'delivered' and trk.v != ''
+                  and (state_attr('sensor.package_deliveries', 'delivered') or [])
+                      | selectattr('tracking', 'eq', trk.v) | list | length > 0) }}
+    actions:
+      - event: package_alert_email
+        event_data:
+          item: "{{ item }}"
+      - if:
+          - condition: template
+            value_template: "{{ (kind | trim) == 'delivered' }}"
+        then:
+          - event: package_alert_arrival
+            event_data:
+              source: email
+              carrier: "{{ carrier | trim }}"
+          # let the door sensor process the arrival event before the helper changes state
+          - delay:
+              seconds: 1
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.package_at_front_door
+
+  # ---------------------------------------------------------------------------------------------
+  # Auto-clear
+  # ---------------------------------------------------------------------------------------------
+  - id: package_alert_auto_clear
+    alias: Package alert - auto-clear after timeout
+    description: >-
+      Turns input_boolean.package_at_front_door off after input_number.package_alert_clear_hours.
+      Every trigger (the "for" wake-up, the 15-minute sweep, HA start) re-checks the age recorded in
+      sensor.front_door_package (restored across restarts) against the CURRENT clear_hours, so a
+      restart or an edited timeout is honoured (a raised timeout simply defers the clear; a lowered
+      one takes effect at the next sweep, within 15 minutes). No removal
+      detection exists: manual clear is the HA UI or a Google Home voice command.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.package_at_front_door
+        to: "on"
+        for:
+          hours: "{{ states('input_number.package_alert_clear_hours') | float(12) }}"
+          minutes: 0
+          seconds: 0
+        id: timeout
+      - trigger: time_pattern
+        minutes: "/15"
+        id: sweep
+      - trigger: homeassistant
+        event: start
+        id: sweep
+    conditions:
+      - condition: state
+        entity_id: input_boolean.package_at_front_door
+        state: "on"
+      # 60 s tolerance: the sensor's `since` is stamped a moment after the helper changed
+      - condition: template
+        value_template: >-
+          {% set s = state_attr('sensor.front_door_package', 'since') %}
+          {% set t = as_datetime(s, none) if (s and is_state('sensor.front_door_package', 'present')) else none %}
+          {% set t = t or states.input_boolean.package_at_front_door.last_changed %}
+          {{ (now() - t).total_seconds() >= (states('input_number.package_alert_clear_hours') | float(12)) * 3600 - 60 }}
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.package_at_front_door
