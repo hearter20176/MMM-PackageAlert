@@ -29,8 +29,10 @@
 #
 # Email path is inert until the IMAP integration exists (imap_content never fires). Setup in the HA UI:
 #   Settings > Devices & services > Add > IMAP (Gmail, app password; needs 2-step verification).
-#   Folder INBOX; search  X-GM-RAW "in:inbox newer_than:2d from:(ups.com OR fedex.com OR usps.com OR usps.gov OR amazon.com OR dhl.com OR ontrac.com)"
-#   Options: message data = text only (NOT headers); max message size 8000-10000.
+#   Folder "[Gmail]/All Mail" WITH the double quotes (HA sends the name unquoted, and the space
+#   breaks the IMAP SELECT); All Mail also catches carrier mail that Gmail filters label and archive.
+#   Search  X-GM-RAW "newer_than:2d from:(ups.com OR fedex.com OR usps.com OR usps.gov OR amazon.com OR dhl.com OR ontrac.com)"
+#   Options: message data = text only (NOT headers); max message size 30000.
 #   Do not use UnSeen in the search (reading the mail on a phone first would suppress the event).
 #
 # Contract notes (MMM-PackageAlert reads these entities)
@@ -47,8 +49,14 @@
 #     no-reply*; OnTrac any address. Mail from any other address can still count as out-for-delivery
 #     but never turns the door on. For every carrier except Amazon a "delivered" mail must also carry
 #     a tracking number or use the personal "Your package/shipment ... was delivered" wording; Amazon
-#     needs its anchored "Delivered:" subject (or a past-tense phrase) from an Amazon sender above.
-#     An Amazon "Delivered:" subject that also mentions deals, Prime Day, sale or "save N" is skipped
+#     needs its anchored "Delivered:" / "Delivered N item(s):" subject (or a past-tense phrase) from
+#     an Amazon sender above.
+#   - A "delivered" mail whose subject names a mailbox, a parcel/package/carrier locker, a PO box, a
+#     post office or postal facility pickup ("picked up"), a mail room, front desk, reception, leasing
+#     office or pickup/access point is listed in sensor.package_deliveries but does NOT turn the door
+#     on (variable elsewhere in package_alert_email_parse). Amazon is exempt: its subject is a product
+#     category, not a place.
+#   - An Amazon "Delivered:" subject that also mentions deals, Prime Day, sale or "save N" is skipped
 #     (treated as marketing) - such an item title will not raise an email alert; the doorbell path still does.
 #     MAINTENANCE: if a real delivered email is missed, open the automation trace for
 #     package_alert_email_parse, read trigger.event.data.sender and subject, and add that sender's
@@ -257,8 +265,9 @@ automation:
     alias: Package alert - parse carrier email
     description: >-
       Parses carrier emails from the IMAP integration (imap_content). Out-for-delivery mails feed
-      sensor.package_deliveries; "delivered" mails also turn on input_boolean.package_at_front_door
-      with source email. Inert until the IMAP integration is configured. Mail older than 1 h
+      sensor.package_deliveries; "delivered" mails are listed there too and, when delivered to the
+      door, turn on input_boolean.package_at_front_door with source email (mailbox, locker, PO box,
+      postal facility and front desk deliveries are only listed). Inert until the IMAP integration is configured. Mail older than 1 h
       (delivered) or 12 h (out for delivery) is ignored so a restart replay cannot set the door.
     mode: queued
     max: 10
@@ -289,6 +298,10 @@ automation:
       # DHL states delivery status in the body rather than the subject, so scan the start of it too
       scan: >-
         {{ (subject | lower) ~ ((' ' ~ (text | lower)[:1500]) if (carrier | trim) == 'dhl' else '') }}
+      # delivered somewhere other than the door (USPS "Item Delivered, In/At Mailbox" etc.). Not for
+      # Amazon: its subject is a product category ("Delivered 1 item: Mailbox Accessories").
+      elsewhere: >-
+        {{ (carrier | trim) != 'amazon' and (subject | lower) is search('mailbox|(parcel|package|amazon|ups|fedex|hub) locker|\\bp\\.?o\\.? box|post office|postal facility|picked up|mail ?room|front desk|reception|leasing office|pick ?up point|access point') }}
       # Per-carrier tracking patterns, tried in order. FedEx/DHL digit-only numbers need the word
       # "tracking" (or waybill/shipment for DHL) within 200 chars before them, so order numbers and
       # phone numbers are not picked up. No match gives an empty tracking (dedupe falls back to subject).
@@ -322,8 +335,9 @@ automation:
             or (c == 'dhl' and sender is search('(^|<)(donotreply|noreply|no-reply)[a-z._-]*@'))
             or c == 'ontrac' -}}
       # kind: transactional wording from a transactional sender only.
-      #  1. Amazon style "Delivered: <item>" at the very start of the subject, from an allowlisted
-      #     Amazon sender, wins first (item titles may contain ?, deals, review, delayed ...).
+      #  1. Amazon style "Delivered: <item>" / "Delivered 2 items: <category>" at the very start of
+      #     the subject, from an allowlisted Amazon sender, wins first (item titles may contain ?,
+      #     deals, review, delayed ...).
       #  2. Marketing/survey/recap/failed-delivery subjects are rejected.
       #  3. "delivered" needs a past-tense transactional phrase (subject, or for DHL a strong one in the
       #     body), no future/conditional word before THAT phrase in its own sentence, and no
@@ -332,7 +346,9 @@ automation:
       #     was found, or the wording is the personal "Your package/shipment ... was delivered" form
       #     (subject, or DHL body). This keeps recaps, newsletters and "see where packages were
       #     delivered" promos from allowlisted senders from arming the door.
-      #  5. Otherwise out-for-delivery phrases.
+      #  5. Otherwise out-for-delivery phrases in the subject. USPS keeps it in the body: its
+      #     "Expected Delivery on <day>" subject is sent the day before AND on the morning, and only
+      #     the body ("Your item is out for delivery") tells them apart.
       kind: |-
         {%- set sl = subject | lower -%}
         {%- set c = carrier | trim -%}
@@ -340,11 +356,12 @@ automation:
         {%- set future = scan is search('\\b(once|will|when|if|until|after|should)\\b[^.!?]{0,60}\\b(' ~ posphrase ~ ')') -%}
         {%- set pos = (sl is search(posphrase)) or (c == 'dhl' and scan is search('(has been|was) delivered|delivered successfully|successfully delivered')) -%}
         {%- set personal = (sl is search('^(ups update: )?your (ups |usps |fedex )?(package|packages|shipment|shipments|parcel|item|items|order)( [a-z0-9]+)? (was|were|has been|have been) delivered|^(usps )?item delivered')) or (c == 'dhl' and scan is search('your (shipment|parcel|package)\\b[^.!?]{0,40}\\b(has been|was) delivered')) -%}
-        {%- if sl is search('^\\s*delivered:') and sender_ok and sl is not search('\\bdeals?\\b|prime day|\\bsale\\b|save [0-9]') -%}delivered
+        {%- if sl is search('^\\s*delivered( [0-9]+ items?)?:') and sender_ok and sl is not search('\\bdeals?\\b|prime day|\\bsale\\b|save [0-9]') -%}delivered
         {%- elif sl is search('not delivered|delivery attempt|attempted|undeliverable|delivery exception|delivered to (a )?neighbo|delayed|rate your|rate (them|it)\\b|survey|feedback|\\bdeals?\\b|my choice|as little as|how was|\\breview\\b|\\brecently\\b|\\brecap\\b|this year|was your package delivered') -%}
         {%- elif sender_ok and pos and (c == 'amazon' or trk.v != '' or personal) and not future and scan is not search('not delivered|could not be delivered|undeliverable|delivered to (a |your )?neighbo') -%}delivered
         {%- elif scan is search('out for delivery|scheduled for delivery today|delivery scheduled for today|driver is arriving|follow your delivery|will be delivered today|(scheduled|expected|due) to be delivered today') -%}out_for_delivery
         {%- elif scan is search('arriving today') and sender is not search('informeddelivery') -%}out_for_delivery
+        {%- elif c == 'usps' and sender_ok and (text | lower) is search('your\\s+(item|package)\\s+is\\s+out\\s+for\\s+delivery') -%}out_for_delivery
         {%- endif -%}
       # message identity: uid + date + subject length (no tracking number, never digit-only)
       mkey: >-
@@ -383,7 +400,7 @@ automation:
           item: "{{ item }}"
       - if:
           - condition: template
-            value_template: "{{ (kind | trim) == 'delivered' }}"
+            value_template: "{{ (kind | trim) == 'delivered' and not (elsewhere | bool(false)) }}"
         then:
           - event: package_alert_arrival
             event_data:

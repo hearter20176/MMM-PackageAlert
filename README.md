@@ -31,7 +31,7 @@ The module's own region wrapper has zero height in every state, so showing or hi
 Home Assistant decides what is at the door and what is arriving; the module only displays it.
 
 - **Package delivered (door).** A Google Home scripted automation fires on the Nest `PackageDelivered` event (Nest Aware package detection) and turns on a Home Assistant `input_boolean`. That helper is exposed to Google through Home Assistant Cloud (Google Assistant). A package YAML turns the helper into `sensor.front_door_package`.
-- **Carrier emails.** Home Assistant's built-in IMAP integration reads carrier mail. "Out for delivery" mail feeds the arriving list. "Delivered" mail turns the helper on with source `email` and the carrier.
+- **Carrier emails.** Home Assistant's built-in IMAP integration reads carrier mail. "Out for delivery" mail feeds the arriving list. "Delivered" mail joins the delivered list and, when the package went to the door, turns the helper on with source `email` and the carrier. Deliveries to a mailbox, parcel locker, PO box, post office or front desk are listed but do not raise the door alert.
 - **No automatic removal.** Nothing detects that a package was picked up. The alert clears after a configurable timeout (the example package defaults to 12 hours, 1 to 48 via `input_number.package_alert_clear_hours`), or manually in the Home Assistant UI, or by voice ("Hey Google, turn off Package At Front Door").
 
 ## Installation
@@ -165,12 +165,19 @@ The email path is inert until the IMAP integration exists.
 
 1. In a Google account that receives carrier notifications, enable 2-step verification and create an app password.
 2. In Home Assistant: Settings, Devices and services, Add integration, IMAP. Server `imap.gmail.com`, port 993, your address, and the app password.
-3. In the integration options, include the message text in the event data so tracking numbers can be read.
-4. Recommended search, to cut down on unrelated mail (the package also matches sender domains itself):
+3. In the integration options (Configure):
+   - **Folder:** `"[Gmail]/All Mail"`, typed with the double quotes. Home Assistant passes the folder name to the server unquoted, so without them the space makes Gmail reject the folder. All Mail also catches carrier mail that a Gmail filter labels and archives; `INBOX` would miss it.
+   - **IMAP search** (Gmail syntax; put it in the search field, not the custom event data template field):
 
-   ```
-   UNSEEN OR OR OR OR OR FROM "ups.com" FROM "fedex.com" FROM "usps.com" FROM "amazon.com" FROM "dhl.com" FROM "ontrac.com"
-   ```
+     ```
+     X-GM-RAW "newer_than:2d from:(ups.com OR fedex.com OR usps.com OR usps.gov OR amazon.com OR dhl.com OR ontrac.com)"
+     ```
+
+     Do not add `UNSEEN`: reading a notification on your phone first would hide it from Home Assistant.
+   - **Message data:** text only (tracking numbers are read from it).
+   - **Max message size:** 30000. At the 2048 default, tracking numbers further down a mail are cut off.
+
+   With a non-Gmail provider, use your provider's folder name and a plain IMAP search such as `OR OR FROM "ups.com" FROM "fedex.com" FROM "usps.com"`.
 
 The package reacts to the `imap_content` event. Only recent mail counts: "delivered" mail older than about an hour and "out for delivery" mail older than about 12 hours is ignored. No email credentials ever live on the mirror.
 
