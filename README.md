@@ -4,6 +4,11 @@ A [MagicMirror²](https://magicmirror.builders/) module that floats a slim banne
 
 ## What it shows
 
+![Package banner: package at the front door, one more arriving today](docs/screenshot.png)
+
+*Sample data: a UPS delivery email set "Package at the front door", and a USPS "out for delivery"
+email adds an "Arriving today" line with a masked tracking chip.*
+
 A single glass card, pinned as an overlay just under the clock. It shows whichever of these apply and renders nothing at all (zero height, no gap) when none do.
 
 - **Package at the front door** while the door sensor is `present`. Shows when it appeared ("Since 2:14 PM", "yesterday 9:05 PM", or a weekday or date for older ones) and the source: "doorbell camera", or "delivery email from UPS" when a carrier is known.
