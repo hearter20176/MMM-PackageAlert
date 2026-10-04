@@ -48,14 +48,6 @@ cd MMM-PackageAlert
 npm install --omit=dev
 ```
 
-To update:
-
-```bash
-cd ~/MagicMirror/modules/MMM-PackageAlert
-git pull
-npm install --omit=dev
-```
-
 Restart MagicMirror afterwards (for example `pm2 restart <your-mm-process>`).
 
 Requirements:
@@ -63,6 +55,16 @@ Requirements:
 - MagicMirror² with Node.js 20 or newer (the helper uses the `ws` package, installed by `npm install`). The module uses MagicMirror's own Font Awesome 7 for icons.
 - A Home Assistant instance reachable from the mirror, with a long-lived access token.
 - Home Assistant Cloud (or another way to expose an entity to Google Assistant) and Nest Aware, for the doorbell path. The email path needs only a mailbox with an app password.
+
+## Update
+
+```bash
+cd ~/MagicMirror/modules/MMM-PackageAlert
+git pull
+npm install --omit=dev
+```
+
+Then restart MagicMirror (for example `pm2 restart MagicMirror`).
 
 ## Configuration
 
@@ -78,7 +80,7 @@ Requirements:
     maxTracking: 3,
     timeFormat: 12
   }
-}
+},
 ```
 
 `classes: "fixed_page"` is only meaningful with MMM-pages; omit it otherwise.

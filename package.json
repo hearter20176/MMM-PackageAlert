@@ -2,9 +2,19 @@
   "name": "MMM-PackageAlert",
   "version": "1.0.0",
   "description": "MagicMirror² module that shows a slim banner when a package is at the front door or arriving today, driven by Home Assistant.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hearter20176/MMM-PackageAlert.git"
+  },
+  "homepage": "https://github.com/hearter20176/MMM-PackageAlert#readme",
+  "bugs": {
+    "url": "https://github.com/hearter20176/MMM-PackageAlert/issues"
+  },
+  "author": "",
   "main": "MMM-PackageAlert.js",
   "scripts": {
-    "test": "node --test --test-timeout=30000 test/*.test.js"
+    "test": "node --test --test-timeout=30000 test/*.test.js",
+    "lint": "eslint ."
   },
   "keywords": [
     "MagicMirror",
@@ -13,12 +23,16 @@
     "delivery",
     "doorbell"
   ],
-  "author": "",
   "license": "MIT",
   "dependencies": {
     "ws": "^8.22.0"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0"
   }
 }
