@@ -290,7 +290,7 @@ Module.register("MMM-PackageAlert", {
 	// ResizeObserver over to it. The anchor's module wrapper is observed too: when the other
 	// module replaces its card, the old element stops reporting but the wrapper still resizes.
 	_bindAnchor () {
-		var anchor = null;
+		var anchor;
 		try {
 			anchor = document.querySelector(this.config.anchorSelector);
 		} catch (e) {
