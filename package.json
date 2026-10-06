@@ -1,5 +1,5 @@
 {
-  "name": "MMM-PackageAlert",
+  "name": "mmm-packagealert",
   "version": "1.0.0",
   "description": "MagicMirror² module that shows a slim banner when a package is at the front door or arriving today, driven by Home Assistant.",
   "repository": {
@@ -10,7 +10,8 @@
   "bugs": {
     "url": "https://github.com/hearter20176/MMM-PackageAlert/issues"
   },
-  "author": "",
+  "author": "hearter20176",
+  "type": "commonjs",
   "main": "MMM-PackageAlert.js",
   "scripts": {
     "test": "node --test --test-timeout=30000 test/*.test.js",
@@ -33,6 +34,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.12.0",
+    "eslint-plugin-package-json": "^1.10.1",
     "globals": "^17.13.0"
   }
 }

@@ -293,7 +293,7 @@ Module.register("MMM-PackageAlert", {
 		var anchor;
 		try {
 			anchor = document.querySelector(this.config.anchorSelector);
-		} catch (e) {
+		} catch {
 			anchor = null;
 		}
 		if (anchor === this.anchorEl) return;
@@ -383,7 +383,7 @@ Module.register("MMM-PackageAlert", {
 		var time;
 		try {
 			time = then.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", hour12: Number(this.config.timeFormat) !== 24 });
-		} catch (e) {
+		} catch {
 			time = then.toLocaleTimeString();
 		}
 		var startOf = function (d) {
@@ -395,7 +395,7 @@ Module.register("MMM-PackageAlert", {
 		var day;
 		try {
 			day = then.toLocaleDateString(locale, days < 7 ? { weekday: "short" } : { month: "short", day: "numeric" });
-		} catch (e) {
+		} catch {
 			day = then.toDateString();
 		}
 		return day + " " + time;
@@ -482,7 +482,7 @@ Module.register("MMM-PackageAlert", {
 				card.appendChild(this._el("div", "pa-status" + (this.error.kind !== "connection" ? " pa-status-error" : ""), status));
 			}
 			root.appendChild(card);
-		} catch (e) {
+		} catch {
 			// A bad payload must never break the render: show nothing rather than throw.
 			root = this._el("div", "pa-root pa-empty");
 		}

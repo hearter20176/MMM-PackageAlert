@@ -27,7 +27,7 @@ test("connects, authenticates, snapshots, subscribes, and relays live changes", 
 	const ctx = makeHelper();
 	try {
 		ctx.configure({ haUrl: srv.url });
-		await waitFor(() => ctx.last() && ctx.last().connected && ctx.last().door.state === "present");
+		await waitFor(() => ctx.last() && ctx.last().connected && ctx.last().door?.state === "present");
 		assert.deepEqual(srv.authTokens, [TOKEN]);
 		const types = srv.received.map((m) => m.type);
 		assert.deepEqual(types.slice(0, 3), ["auth", "get_states", "subscribe_events"]);
@@ -53,7 +53,8 @@ test("repeated config and a browser reload keep a single connection", async () =
 	try {
 		ctx.configure({ haUrl: srv.url });
 		ctx.configure({ haUrl: srv.url });
-		await waitFor(() => ctx.last() && ctx.last().connected);
+		// connected is set at auth_ok, before the get_states snapshot fills in the door
+		await waitFor(() => ctx.last() && ctx.last().connected && ctx.last().door?.state === "present");
 		ctx.clear();
 		ctx.configure({ haUrl: srv.url });
 		assert.equal(ctx.last().connected, true);
