@@ -9,6 +9,7 @@
 #      deliberately NOT defined here). A Google Home automation (google_home_script.yaml) turns it
 #      on when Nest package detection fires PackageDelivered. Carrier "Delivered" emails turn it on
 #      too (source email). Nothing detects removal: it turns off by the auto-clear timeout below,
+#      by pressing button 4 of the Shelly BLU RC remote (automation package_alert_remote_clear),
 #      by hand in the HA UI, or by voice ("Hey Google, turn off Package At Front Door").
 #   2. input_number.package_alert_clear_hours  auto-clear timeout in hours (1-48). It has no
 #      `initial:` so a value tuned in the UI survives restarts, but that means a brand-new helper
@@ -18,7 +19,7 @@
 #   3. sensor.front_door_package   "present" | "clear" mirror of the helper, plus since/source/carrier.
 #   4. sensor.package_deliveries   out-for-delivery / delivered lists parsed from carrier emails,
 #      reset at local midnight.
-#   5. Automations (ids package_alert_*): email parser, auto-clear.
+#   5. Automations (ids package_alert_*): email parser, auto-clear, remote-button clear.
 #
 # Internal events
 #   package_alert_arrival  {source: "email", carrier}  fired just BEFORE the helper is turned on so
@@ -66,6 +67,21 @@
 #     lose the older one (integration limit).
 #   - Suggested (configuration.yaml, not part of this package) to keep email text and tracking
 #     numbers out of the database:  recorder: exclude: event_types: [imap_content, package_alert_email]
+#   - Remote clear (package_alert_remote_clear): the Shelly BLU RC is paired with ZHA. Each of its
+#     buttons raises a `zha_event`; button 4 is endpoint 2, Level Control (cluster 8), command `step`
+#     with params.step_mode 1 (down). The automation matches that event for ONE remote (device_ieee)
+#     and turns the helper off, which a connected mirror shows within a second or two. It only reacts while
+#     the helper is on, so a stray press with no package is a no-op. Other buttons, long presses
+#     (`move` / `stop` commands) and other ZHA devices never match. To adapt it to another remote or
+#     button: press the button with Developer Tools > Events > Listen to `zha_event` open, then copy
+#     device_ieee, endpoint_id, cluster_id and command into the trigger below, and params.step_mode
+#     (0 = up, 1 = down) into the template condition.
+#     This only clears the door alert; the "Arriving today" line follows sensor.package_deliveries.
+#     After a remote clear, a "delivered" email in the next 45 minutes is listed but does not turn the
+#     alert back on (package_alert_email_parse), so the late carrier mail for the parcel you just
+#     picked up cannot re-arm it. The doorbell (Google Home) path has no such guard beyond its own
+#     2-minute suppressFor. The mirror drops the banner as soon as it receives the state change; if
+#     its Home Assistant connection is down it keeps the last state and catches up on reconnect.
 #   - Tracking numbers are personal data: nothing here logs them or raises notifications with them.
 #     Automation traces keep email text locally, so stored_traces is kept small.
 #   - Right after first install the sensors read "unknown" until the first trigger fires (HA start
@@ -401,6 +417,18 @@ automation:
       - if:
           - condition: template
             value_template: "{{ (kind | trim) == 'delivered' and not (elsewhere | bool(false)) }}"
+          # a late or second "delivered" mail for a parcel you already acknowledged with the remote
+          # (package_alert_remote_clear) must not raise the alert again; it is still listed in
+          # sensor.package_deliveries. 2700 s = 45 min, so a genuinely new delivery later still
+          # alerts. An automation's last_triggered only updates when its actions ran, i.e. on a real
+          # clear, and it survives restarts. The automation is found by its config id because HA names
+          # a YAML automation's entity after its alias, not its id. Missing or unreadable = no
+          # suppression.
+          - condition: template
+            value_template: >-
+              {% set a = states.automation | selectattr('attributes.id', 'eq', 'package_alert_remote_clear') | list | first | default(none) %}
+              {% set lc = as_datetime(a.attributes.last_triggered, none) if a else none %}
+              {{ lc is none or (now() - lc).total_seconds() > 2700 }}
         then:
           - event: package_alert_arrival
             event_data:
@@ -424,7 +452,8 @@ automation:
       sensor.front_door_package (restored across restarts) against the CURRENT clear_hours, so a
       restart or an edited timeout is honoured (a raised timeout simply defers the clear; a lowered
       one takes effect at the next sweep, within 15 minutes). No removal
-      detection exists: manual clear is the HA UI or a Google Home voice command.
+      detection exists: manual clear is remote button 4 (package_alert_remote_clear), the HA UI or
+      a Google Home voice command.
     mode: single
     max_exceeded: silent
     triggers:
@@ -453,6 +482,42 @@ automation:
           {% set t = as_datetime(s, none) if (s and is_state('sensor.front_door_package', 'present')) else none %}
           {% set t = t or states.input_boolean.package_at_front_door.last_changed %}
           {{ (now() - t).total_seconds() >= (states('input_number.package_alert_clear_hours') | float(12)) * 3600 - 60 }}
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.package_at_front_door
+
+  # ---------------------------------------------------------------------------------------------
+  # Remote clear: button 4 of the Shelly BLU RC (ZHA) acknowledges the package
+  # ---------------------------------------------------------------------------------------------
+  - id: package_alert_remote_clear
+    alias: Package alert - clear with remote button 4
+    description: >-
+      Turns input_boolean.package_at_front_door off when button 4 of the Shelly BLU RC remote is
+      pressed (ZHA event: endpoint 2, Level Control step down), which clears the front-door alert on
+      the MagicMirror. See the "Remote clear" contract note at the top of this file to re-learn the
+      event for a different remote or button.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: event
+        event_type: zha_event
+        event_data:
+          # IEEE address of THIS remote: change it to match yours (see the header note).
+          device_ieee: "c0:2c:ed:ff:fe:40:7d:b4"
+          endpoint_id: 2
+          cluster_id: 8
+          command: step
+    conditions:
+      # step_mode 1 = down. Matched here rather than in the trigger so it does not depend on how
+      # the HA version compares nested event_data. A missing or odd value never matches.
+      - condition: template
+        value_template: >-
+          {{ (trigger.event.data.get('params') or {}).get('step_mode') | int(-1) == 1 }}
+      # nothing to clear unless the alert is up
+      - condition: state
+        entity_id: input_boolean.package_at_front_door
+        state: "on"
     actions:
       - action: input_boolean.turn_off
         target:

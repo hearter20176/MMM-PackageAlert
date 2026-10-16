@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Home Assistant package: automation `package_alert_remote_clear` clears the front-door alert when button 4 of the Shelly BLU RC remote (ZHA) is pressed. README step 6 explains how to match your own remote.
+- After a remote clear, `package_alert_email_parse` no longer re-raises the alert for a "delivered" email arriving within 45 minutes (it is still listed in `sensor.package_deliveries`).
 - `package.json`: repository, homepage, bugs, license and keywords fields.
 - README: Update section and trailing commas in the config examples.
 - Node built-ins are imported with the `node:` scheme (for example `node:https`).

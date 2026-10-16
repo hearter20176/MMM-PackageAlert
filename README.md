@@ -37,7 +37,7 @@ Home Assistant decides what is at the door and what is arriving; the module only
 
 - **Package delivered (door).** A Google Home scripted automation fires on the Nest `PackageDelivered` event (Nest Aware package detection) and turns on a Home Assistant `input_boolean`. That helper is exposed to Google through Home Assistant Cloud (Google Assistant). A package YAML turns the helper into `sensor.front_door_package`.
 - **Carrier emails.** Home Assistant's built-in IMAP integration reads carrier mail. "Out for delivery" mail feeds the arriving list. "Delivered" mail joins the delivered list and, when the package went to the door, turns the helper on with source `email` and the carrier. Deliveries to a mailbox, parcel locker, PO box, post office or front desk are listed but do not raise the door alert.
-- **No automatic removal.** Nothing detects that a package was picked up. The alert clears after a configurable timeout (the example package defaults to 12 hours, 1 to 48 via `input_number.package_alert_clear_hours`), or manually in the Home Assistant UI, or by voice ("Hey Google, turn off Package At Front Door").
+- **No automatic removal.** Nothing detects that a package was picked up. The alert clears after a configurable timeout (the example package defaults to 12 hours, 1 to 48 via `input_number.package_alert_clear_hours`), or by pressing button 4 on the Shelly BLU RC remote (see [Clear the alert with a remote button](#6-clear-the-alert-with-a-remote-button-optional)), or manually in the Home Assistant UI, or by voice ("Hey Google, turn off Package At Front Door").
 
 ## Installation
 
@@ -164,7 +164,7 @@ homeassistant:
   packages: !include_dir_named packages
 ```
 
-Run Check configuration, then restart (or reload) Home Assistant. The example creates `sensor.front_door_package`, `sensor.package_deliveries`, `input_number.package_alert_clear_hours` (1 to 48 hours; it keeps your value across restarts, but starts at its 1-hour minimum on first load - set it to 12, or your preferred value, once after the first load), and automations that parse carrier email and auto-clear the alert. Review it before use; it references `input_boolean.package_at_front_door` and expects the sensor entity ids above.
+Run Check configuration, then restart (or reload) Home Assistant. The example creates `sensor.front_door_package`, `sensor.package_deliveries`, `input_number.package_alert_clear_hours` (1 to 48 hours; it keeps your value across restarts, but starts at its 1-hour minimum on first load - set it to 12, or your preferred value, once after the first load), and automations that parse carrier email, auto-clear the alert and clear it from a remote button. Review it before use; it references `input_boolean.package_at_front_door` and expects the sensor entity ids above.
 
 ### 5. Carrier email (optional)
 
@@ -187,6 +187,34 @@ The email path is inert until the IMAP integration exists.
    With a non-Gmail provider, use your provider's folder name and a plain IMAP search such as `OR OR FROM "ups.com" FROM "fedex.com" FROM "usps.com"`.
 
 The package reacts to the `imap_content` event. Only recent mail counts: "delivered" mail older than about an hour and "out for delivery" mail older than about 12 hours is ignored. No email credentials ever live on the mirror.
+
+### 6. Clear the alert with a remote button (optional)
+
+The example package includes the automation `package_alert_remote_clear`. When you press button 4 of a Shelly BLU RC remote paired with ZHA, it turns `input_boolean.package_at_front_door` off, and the banner disappears from the mirror within a second or two (while the mirror is connected to Home Assistant; after an outage it catches up on reconnect). Nothing is added to the mirror itself: the module only displays `sensor.front_door_package`, which mirrors the helper, so clearing the helper clears the banner. It only acts while the alert is up, so a press with no package is harmless, and it clears only the front-door alert (the "Arriving today" line follows `sensor.package_deliveries`).
+
+The remote must be the Zigbee model (Shelly BLU RC Button 4 ZB); the Bluetooth-only BLU RC cannot pair with ZHA. Replacing a battery or re-pairing keeps the IEEE address; a new remote has a new one.
+
+After a remote clear, a carrier "delivered" email arriving within the next 45 minutes is still recorded in `sensor.package_deliveries` (it leaves "Arriving today") but does not turn the alert back on. Only a remote clear starts this window; clearing by voice, in the Home Assistant UI or by auto-clear does not. So the late email for the parcel you just picked up cannot re-arm it. A new delivery after that window alerts as normal. The doorbell path has no such guard apart from the Google Home script's own 2-minute `suppressFor`.
+
+The automation matches one remote by its IEEE address, so set it to yours:
+
+1. In Home Assistant open Developer tools, Events, and listen to `zha_event`.
+2. Press button 4 on the remote. You should see an event like this (other values omitted):
+
+   ```yaml
+   event_type: zha_event
+   data:
+     device_ieee: c0:2c:ed:ff:fe:40:7d:b4
+     endpoint_id: 2
+     cluster_id: 8
+     command: step
+     params:
+       step_mode: 1
+   ```
+
+3. In `package_alert_remote_clear`, make `device_ieee`, `endpoint_id`, `cluster_id` and `command` match what you saw, and `params.step_mode` in the condition (0 is up, 1 is down).
+
+To use a different button, press it and copy its event the same way. Long presses and the other buttons raise different events and are ignored.
 
 ### Entity contract
 
@@ -237,6 +265,10 @@ Other notes:
 - The banner keeps the last known package state during a short outage.
 - Nothing shows when there is no package and nothing arriving; that is normal.
 - If the alert never clears, check `input_number.package_alert_clear_hours` or turn the helper off by hand.
+- If button 4 does not clear the alert, listen to `zha_event` in Developer tools and press the button.
+  - No event appears: the remote is not reaching ZHA. Check its battery and its Last seen time on the ZHA device page, and re-pair it if needed (the IEEE address stays the same; if you replaced the remote, update `device_ieee`).
+  - An event appears: compare it with the trigger of `package_alert_remote_clear` (see step 6 of the Home Assistant setup), then open the automation's trace. If the `step_mode` condition failed, the event is a different button. If the "helper is on" condition failed, Home Assistant was already clear, so the mirror is showing a stale state (check its connection and the status line) or something had already turned the alert off.
+- If the alert clears and then comes back, open the logbook for `input_boolean.package_at_front_door` and the `source` attribute of `sensor.front_door_package`. `camera` means the doorbell fired again; `email` means a carrier mail arrived more than 45 minutes after the clear (or you cleared some other way than the remote, which does not start the 45-minute window).
 - Self-signed `https`: set `haAllowSelfSigned: true`.
 - Helper log lines are prefixed `[MMM-PackageAlert]`. The token, tracking numbers and descriptions are never logged.
 
